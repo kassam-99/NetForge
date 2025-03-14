@@ -118,7 +118,7 @@ All the libraries used in the provided files (os, socket, datetime, logging, tra
 
 ---
 
-## Customization
+# Customization
 
 To adapt **NetForge** for your specific project, you only need to edit `ServerDashboard.py`. This file acts as the main control center, leveraging the robust foundation provided by `ServerSettings.py`. Here’s how to get started:
 
@@ -359,3 +359,30 @@ Output (server_status.txt):
 * Data Structure: Pass a dictionary to the report methods—keys become headers in CSV or fields in `JSON/TXT`.
 * Flexibility: Call self.Reporter in any method `(ServerHandler, server_details, StartServer)` to log specific events or states.
 * Dynamic Filenames: Use timestamps or counters `(e.g., f"chat_log_{time.time()}.csv")` to avoid overwriting files if needed.
+
+
+
+
+
+# Conclusion
+
+**NetForge** is more than just a networking framework—it’s a versatile toolkit that empowers developers to craft tailored server-client applications with ease. From file transfers to real-time chat systems, its modular design, robust logging, and customizable reporting via `self.Reporter` make it a solid foundation for a wide range of projects. By editing only `ServerDashboard.py`, you can harness the power of `ServerSettings.py`’s predefined functions and statuses to build exactly what you need, whether it’s a secure IoT hub, a remote admin tool, or a cybersecurity monitor.  
+
+As an open-source project, NetForge thrives on community input. Whether you’re tweaking it for a personal project or contributing to its growth, your creativity can shape its future. So, dive in, forge your solution, and let’s build the next generation of networked applications together! 🚀
+
+---
+
+## Extra Goodies
+
+#### Table of Supported Platforms
+| Platform  | Status       | Notes                 |
+|-----------|--------------|-----------------------|
+| Windows   | ✅ Supported | Tested on Win 10+     |
+| Linux     | ✅ Supported | Ubuntu, Fedora, etc.  |
+| macOS     | ✅ Supported | macOS 11+ compatible  |
+
+#### Horizontal Rule
+***  
+Ready to forge your next app? Let’s go! 🚀  
+
+---
