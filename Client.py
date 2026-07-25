@@ -168,20 +168,17 @@ class General_User:
             # Step 2: Transmit the initial 3-byte user request
             # Command: Connect (0xAA), User Type: Client (0x2A), Status: Request (0x3C)
             init_request = struct.pack("BBB", 0xAA, 0x2A, 0x3C)
-            self.client_socket.send(init_request)
-                
-            
+            self.client_socket.sendall(init_request)
+
+
             # Step 3: Transmit the user ID
             # Append a null terminator (b'\x00') to signify the end of the user ID
-            self.client_socket.send(user_id.encode('utf-8') + b'\x00')
-        
-        
+            self.client_socket.sendall(user_id.encode('utf-8') + b'\x00')
+
+
             # Step 4: Receive the server's response for the user request
-            server_response = self.client_socket.recv(3)
-            if len(server_response) < 3:
-                self.log_info(f"[!] Invalid response length. Received {len(server_response)} bytes.")
-                self.client_socket.close()
-                return
+            # recv_exact() loops until all 3 bytes arrive (partial-read safe).
+            server_response = self._recv_exact(3)
     
             user_status, server_type, client_type = struct.unpack("BBB", server_response)
     
@@ -199,15 +196,11 @@ class General_User:
             # Step 6: Transmit the initial 3-byte user application
             # Command: Status: Request (0x3C), User Type: Client (0x2A), User application either 0x2B or 0x3B
             init_request = struct.pack("BBB", 0x3C, 0x2A, user_applications)
-            self.client_socket.send(init_request)
-                      
-            
+            self.client_socket.sendall(init_request)
+
+
             # Step 7: Receive the server's response for the user application
-            server_response = self.client_socket.recv(3)
-            if len(server_response) < 3:
-                self.log_info(f"[!] Invalid response length. Received {len(server_response)} bytes.")
-                self.client_socket.close()
-                return
+            server_response = self._recv_exact(3)
     
             user_status, server_type, _user_applications = struct.unpack("BBB", server_response)
             
@@ -224,19 +217,24 @@ class General_User:
             self.log_info("[*] Connection process completed successfully")
 
 
-            # Step 9: Drive the file transfer according to the negotiated application.
+            # Step 9: Drive the file transfer according to the negotiated
+            # application and propagate its outcome to the caller so a failed
+            # upload/download is not reported as success.
+            transfer_ok = True
             if user_applications == 0x3B:   # sender -> upload a file to the server
                 if filepath:
-                    self.send_file(filepath)
+                    transfer_ok = self.send_file(filepath)
                 else:
                     self.log_info("[!] Sender application selected but no filepath provided")
+                    transfer_ok = False
             elif user_applications == 0x2B:  # receiver -> download a file from the server
                 if filepath:
-                    self.request_file(filepath, dest_dir)
+                    transfer_ok = self.request_file(filepath, dest_dir) is not None
                 else:
                     self.log_info("[!] Receiver application selected but no filename requested")
+                    transfer_ok = False
 
-            return True
+            return bool(transfer_ok)
 
         except Exception as e:
             self.log_info(f"[!] Error: {e}")

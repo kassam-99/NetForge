@@ -6,6 +6,7 @@ import threading
 
 from ReportGenerator import Report_Generator
 from server_logs import Logs
+from ServerFunctions import MAX_NAME_LEN
 from ServerHandler import UserHandler
 
 
@@ -56,11 +57,11 @@ class Server_Dashboard(UserHandler):
 
     def ServerHandler(self, ClientConn, ClientInfo):
         """Handles the communication with the client and initiates file transfer."""
+        # ClientConn: <socket.socket fd=6, family=2, type=1, proto=0, laddr=('192.168.1.121', 8000), raddr=('192.168.1.121', 42952)>
+        # ClientInfo: ('192.168.1.121', 42952)
+        session = {}
         try:
-            # ClientConn: <socket.socket fd=6, family=2, type=1, proto=0, laddr=('192.168.1.121', 8000), raddr=('192.168.1.121', 42952)>
-            # ClientInfo: ('192.168.1.121', 42952)
             ClientConn.settimeout(30)
-            session = {}
             if self.verify_connection(ClientConn, ClientInfo, session) == True:
                 self.Logger_server_Dashboard.LogsMessages(f"[+] Connection Established with {ClientInfo}", message_type="info", verbose=self.verbose)
                 self.handle_file_transfer(ClientConn, ClientInfo, session)
@@ -68,6 +69,15 @@ class Server_Dashboard(UserHandler):
         except Exception as e:
             self.Logger_server_Dashboard.LogsMessages(f"[!] Error in Handling a server - ServerHandler: {e}", message_type="error", verbose=self.verbose)
         finally:
+            # Remove this client's ConnClient record so the list does not grow
+            # without bound and the User ID is not permanently seen as a duplicate.
+            record = session.get("_conn_record")
+            if record is not None:
+                with self._conn_lock:
+                    try:
+                        self.ConnClient.remove(record)
+                    except ValueError:
+                        pass
             try:
                 ClientConn.close()
             except OSError:
@@ -96,6 +106,8 @@ class Server_Dashboard(UserHandler):
 
             elif app_code == receiver_code:
                 name_len = struct.unpack("!Q", self.recv_exact(ClientConn, 8))[0]
+                if name_len == 0 or name_len > MAX_NAME_LEN:
+                    raise ValueError(f"Rejected requested-name length {name_len} (limit {MAX_NAME_LEN})")
                 requested = self.recv_exact(ClientConn, name_len).decode("utf-8")
                 path = os.path.join(self.storage_dir, os.path.basename(requested))
                 if os.path.isfile(path):

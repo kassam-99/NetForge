@@ -3,11 +3,17 @@ from server_logs import Logs
 from ServerSettings import Server
 
 import os
+import shutil
 import socket
 import struct
 
 # Chunk size used for streaming file bytes over the socket.
 FILE_CHUNK_SIZE = 65536
+
+# Bounds for the attacker-controlled length prefixes read off the socket so a
+# malicious/buggy client cannot exhaust memory or fill the disk.
+MAX_NAME_LEN = 4096                 # bytes; longest accepted filename
+MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10 GiB hard cap on a single transfer
 
 
 
@@ -85,8 +91,17 @@ class Server_Functions(Server):
         """Receive a length-prefixed file into dest_dir. Returns (path, size)."""
         os.makedirs(dest_dir, exist_ok=True)
         name_len = struct.unpack("!Q", self.recv_exact(conn, 8))[0]
+        # Reject an oversized/empty name before allocating for it.
+        if name_len == 0 or name_len > MAX_NAME_LEN:
+            raise ValueError(f"Rejected filename length {name_len} (limit {MAX_NAME_LEN})")
         filename = self.recv_exact(conn, name_len).decode("utf-8")
         filesize = struct.unpack("!Q", self.recv_exact(conn, 8))[0]
+        # Reject a transfer that exceeds the hard cap or would not fit on disk.
+        if filesize > MAX_FILE_SIZE:
+            raise ValueError(f"Rejected file size {filesize} (limit {MAX_FILE_SIZE})")
+        free = shutil.disk_usage(dest_dir).free
+        if filesize > free:
+            raise ValueError(f"Insufficient disk space: need {filesize}, have {free}")
         # basename() prevents path-traversal via a crafted filename.
         dest_path = os.path.join(dest_dir, os.path.basename(filename))
         with open(dest_path, "wb") as f:
@@ -103,8 +118,10 @@ class Server_Functions(Server):
     def send_request(self, user_conn, user_data, message, username=None, user_id=None, user_type=None, message_type=None):
         
         try:
-            
-            user_conn.send(message)
+
+            # sendall() so a short write on a real network cannot truncate the
+            # fixed-size handshake frame.
+            user_conn.sendall(message)
             log_message = (
                 f"[*] The message was sent successfully:"
                 f"\n    - User IP: {user_data[0]}"

@@ -3,6 +3,7 @@ from server_logs import Logs
 from ServerFunctions import Server_Functions
 
 import datetime
+import socket
 import struct
 
 
@@ -80,14 +81,13 @@ class UserHandler(Server_Functions):
                 user_conn.settimeout(30)
 
             # Step 1: Receive the initial 3-byte user request
-            first_request = user_conn.recv(3)
-            if len(first_request) < 3:
+            # recv_exact() loops until all 3 bytes arrive so a partial TCP read
+            # on a real network is not mistaken for an invalid request.
+            try:
+                first_request = self.recv_exact(user_conn, 3)
+            except (ConnectionError, socket.timeout, OSError) as e:
                 self.Logger_server_UserHandler.LogsMessages(
-                    f"[!] Invalid request length. Received {len(first_request)} bytes.",
-                    message_type="warning", verbose=self.verbose
-                )
-                self.Logger_server_UserHandler.LogsMessages(
-                    f"[!] Connection request received from: {user_data[0]}:{user_data[1]} - Request: {first_request}",
+                    f"[!] Failed to read initial request from {user_data[0]}:{user_data[1]}: {e}",
                     message_type="warning", verbose=self.verbose
                 )
                 self.disconnect_user(user_conn, user_data)
@@ -158,10 +158,11 @@ class UserHandler(Server_Functions):
 
 
             # Step 5: Receive the second 3-byte user application
-            second_request = user_conn.recv(3)
-            if len(second_request) < 3:
+            try:
+                second_request = self.recv_exact(user_conn, 3)
+            except (ConnectionError, socket.timeout, OSError) as e:
                 self.Logger_server_UserHandler.LogsMessages(
-                    f"[!] Invalid second request length. Received {len(second_request)} bytes.",
+                    f"[!] Failed to read second request from {user_data[0]}:{user_data[1]}: {e}",
                     message_type="warning", verbose=self.verbose
                 )
                 self.disconnect_user(user_conn, user_data)
@@ -199,13 +200,40 @@ class UserHandler(Server_Functions):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
-            # Step 8: Process connection details and store them
+            # Step 8: Process connection details and store them.
+            # Build the record in a LOCAL variable (never on self, which is shared
+            # across handler threads) and do the duplicate check + append together
+            # under the lock so two threads cannot both pass the check and append.
+            conn_info = {
+                # User Information
+                "User No.": None,  # assigned under the lock below
+                "User Status": self.user_status_code[user_type_init_request], # e.g., "authorized access", "unauthorized access", "blocked User"
+                "User ID": user_id,
+                "Username": "user",
+                "User IP": user_data[0],
+                "User Port": user_data[1],
+
+                # Connection Details
+                "Connected Time": timestamp,
+                "Connection Command": self.user_status_code[command],         # Values from user_status_code (e.g., "connect", "disconnect")
+                "User Type": self.user_status_code[user_type_init_request],   # e.g., "server", "admin", "client"
+                "User Application": self.user_status_code[user_applications], # e.g., "all", "browser", "receiver", "sender"
+
+                # Connection and Network Status
+                "Connection Status": self.user_status_code[0x0D],             # Values from user_status_code connection statuses (e.g., "Connection established")
+            }
+
             is_duplicate = None
-            for client in self.ConnClient:
-                if client.get("User ID") == user_id:
-                    is_duplicate = client
-                    break
-            
+            with self._conn_lock:
+                for client in self.ConnClient:
+                    if client.get("User ID") == user_id:
+                        is_duplicate = client
+                        break
+                if is_duplicate is None:
+                    self.order += 1
+                    conn_info["User No."] = self.order
+                    self.ConnClient.append(conn_info)
+
             if is_duplicate:
                 self.Logger_server_UserHandler.LogsMessages(
                     f"[!] Duplicate user detected:"
@@ -229,31 +257,7 @@ class UserHandler(Server_Functions):
                 self.disconnect_user(user_conn, user_data)
                 return False
 
-            else:
-                with self._conn_lock:
-                    self.order += 1
-                    order = self.order
-                self.ConnClientInfo = {
-                    # User Information
-                    "User No.": order,
-                    "User Status": self.user_status_code[user_type_init_request], # e.g., "authorized access", "unauthorized access", "blocked User"
-                    "User ID": user_id,
-                    "Username": "user",
-                    "User IP": user_data[0],
-                    "User Port": user_data[1],
-                    
-                    # Connection Details
-                    "Connected Time": timestamp,
-                    "Connection Command": self.user_status_code[command],         # Values from user_status_code (e.g., "connect", "disconnect")
-                    "User Type": self.user_status_code[user_type_init_request],   # e.g., "server", "admin", "client"
-                    "User Application": self.user_status_code[user_applications], # e.g., "all", "browser", "receiver", "sender"
-                     
-                    # Connection and Network Status
-                    "Connection Status": self.user_status_code[0x0D],             # Values from user_status_code connection statuses (e.g., "Connection established")
-                }
-                with self._conn_lock:
-                    self.ConnClient.append(self.ConnClientInfo)
-                self.Logger_server_UserHandler.LogsMessages(self.ConnClientInfo, message_type="info", verbose=self.verbose)
+            self.Logger_server_UserHandler.LogsMessages(conn_info, message_type="info", verbose=self.verbose)
 
             # Expose the negotiated session details to the caller (thread-safe:
             # the caller passes its own dict) so it can drive the file transfer.
@@ -263,6 +267,9 @@ class UserHandler(Server_Functions):
                 session["user_type"] = user_type_init_request
                 session["app_code"] = user_applications
                 session["application"] = self.user_status_code[user_applications]
+                # Hand the caller our ConnClient record so it can remove it on
+                # teardown (prevents the unbounded-growth / permanent-duplicate bug).
+                session["_conn_record"] = conn_info
 
             return True
     
