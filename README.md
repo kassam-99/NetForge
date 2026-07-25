@@ -32,6 +32,44 @@ The whole conversation is just a few fixed-size frames:
     |<----------------------------------------|
 ```
 
+### Data flow at a glance
+
+How the real components talk: the client drives the 3-byte handshake and then a
+length-prefixed file frame; the server validates, then either stores an upload or
+streams a download from `FileServer/storage/`. The dashboard launches/drives them
+and the report generator turns connection records into CSV/TXT/JSON.
+
+```mermaid
+flowchart LR
+    DASH["dashboard.py<br/>CLI menu and --demo showcase"]
+
+    subgraph client["Client - General_User (Client.py)"]
+        C1["ConnToServer()<br/>3-byte handshake + user ID"]
+        C2["send_file() / request_file()<br/>uses _recv_exact()"]
+    end
+
+    subgraph server["Server - Server_Dashboard (ServerDashboard.py)"]
+        S1["StartServer()<br/>threaded accept loop"]
+        S2["verify_connection()<br/>UserHandler validates frames"]
+        S3["handle_file_transfer()<br/>recv_file / send_file / recv_exact"]
+    end
+
+    STORE[("FileServer/storage/")]
+    REP["Report_Generator<br/>CSV / TXT / JSON to reports/"]
+    LOGS["FileServer/*.log"]
+
+    DASH -.launches.-> S1
+    DASH -.demo drives.-> C1
+    DASH --> REP
+
+    C1 <-->|"handshake: 3B frames + accepted echoes"| S2
+    C1 --> C2
+    C2 <-->|"framed file: len, name, size, raw bytes + 1B status"| S3
+    S1 --> S2 --> S3
+    S3 <--> STORE
+    S2 --> LOGS
+```
+
 ## Features
 
 - **3-byte handshake state machine** with server-side validation of command,
@@ -86,6 +124,11 @@ NetForge demo complete — all real features exercised successfully.
 The `--demo` run binds an **ephemeral loopback port**, serves from a daemon
 thread, performs a real sender upload and receiver download, verifies the bytes
 match, and cleans up its temp files — no network or hardware required.
+
+<!-- Screenshot slot: drop a capture of `python3 dashboard.py --demo` (or the
+     interactive menu) into docs/screenshots/ and reference it here, e.g.:
+     ![NetForge dashboard --demo](docs/screenshots/dashboard-demo.png)
+-->
 
 ## Usage
 
