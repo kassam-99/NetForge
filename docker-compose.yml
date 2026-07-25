@@ -1,0 +1,14 @@
+services:
+  netforge:
+    build: .
+    image: netforge
+    container_name: netforge
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist uploaded/downloadable files and server logs across restarts.
+      - netforge-storage:/app/FileServer
+    restart: unless-stopped
+
+volumes:
+  netforge-storage:

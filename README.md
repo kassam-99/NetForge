@@ -175,6 +175,38 @@ client.ConnToServer("alice", 0x3B, filepath="myfile.txt")   # 0x3B = sender / up
 client.ConnToServer("alice", 0x2B, filepath="myfile.txt")   # 0x2B = receiver / download
 ```
 
+## Running with Docker
+
+The server ships with a small, production-appropriate image (stdlib-only, so no
+pip install step is needed) that runs as a non-root user and binds
+`0.0.0.0:8000` inside the container.
+
+### Build and run with Docker
+
+```bash
+docker build -t netforge .
+docker run --rm -p 8000:8000 -v netforge-storage:/app/FileServer netforge
+```
+
+The server is then reachable on the host at `127.0.0.1:8000` (point clients at
+your host IP and port `8000`). Uploaded/downloadable files and logs live under
+`/app/FileServer` in the container, persisted in the `netforge-storage` volume.
+
+### With Docker Compose
+
+```bash
+docker compose up --build      # add -d to run in the background
+docker compose down            # stop (the named volume is kept)
+```
+
+Compose publishes `8000:8000` and mounts a named `netforge-storage` volume at
+`/app/FileServer` so uploads and logs survive restarts. Connect clients to the
+host at port **8000**, for example:
+
+```bash
+python3 Client.py --host 127.0.0.1 --port 8000 --app sender --file ./myfile.txt
+```
+
 ## Protocol
 
 The handshake is a fixed sequence of 3-byte frames (each byte is a control
