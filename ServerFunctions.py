@@ -2,8 +2,12 @@ from ReportGenerator import Report_Generator
 from server_logs import Logs
 from ServerSettings import Server
 
+import os
 import socket
 import struct
+
+# Chunk size used for streaming file bytes over the socket.
+FILE_CHUNK_SIZE = 65536
 
 
 
@@ -38,6 +42,62 @@ class Server_Functions(Server):
             if val == value:
                 return key
         return None
+
+
+    # ------------------------------------------------------------------
+    # Length-prefixed file-transfer helpers (shared by server and client)
+    #
+    # Wire format for a single file (all integers are big-endian):
+    #   [8 bytes] filename length (unsigned long long, "!Q")
+    #   [N bytes] filename (utf-8)
+    #   [8 bytes] file size (unsigned long long, "!Q")
+    #   [size]    raw file bytes, streamed in FILE_CHUNK_SIZE chunks
+    # ------------------------------------------------------------------
+    @staticmethod
+    def recv_exact(conn, num_bytes):
+        """Receive exactly num_bytes from conn or raise ConnectionError."""
+        data = bytearray()
+        while len(data) < num_bytes:
+            chunk = conn.recv(min(FILE_CHUNK_SIZE, num_bytes - len(data)))
+            if not chunk:
+                raise ConnectionError(
+                    f"Socket closed after {len(data)}/{num_bytes} bytes")
+            data.extend(chunk)
+        return bytes(data)
+
+    def send_file(self, conn, filepath):
+        """Send a file to conn using the length-prefixed frame. Returns (name, size)."""
+        filename = os.path.basename(filepath)
+        name_bytes = filename.encode("utf-8")
+        filesize = os.path.getsize(filepath)
+        conn.sendall(struct.pack("!Q", len(name_bytes)))
+        conn.sendall(name_bytes)
+        conn.sendall(struct.pack("!Q", filesize))
+        with open(filepath, "rb") as f:
+            while True:
+                chunk = f.read(FILE_CHUNK_SIZE)
+                if not chunk:
+                    break
+                conn.sendall(chunk)
+        return filename, filesize
+
+    def recv_file(self, conn, dest_dir):
+        """Receive a length-prefixed file into dest_dir. Returns (path, size)."""
+        os.makedirs(dest_dir, exist_ok=True)
+        name_len = struct.unpack("!Q", self.recv_exact(conn, 8))[0]
+        filename = self.recv_exact(conn, name_len).decode("utf-8")
+        filesize = struct.unpack("!Q", self.recv_exact(conn, 8))[0]
+        # basename() prevents path-traversal via a crafted filename.
+        dest_path = os.path.join(dest_dir, os.path.basename(filename))
+        with open(dest_path, "wb") as f:
+            remaining = filesize
+            while remaining > 0:
+                chunk = conn.recv(min(FILE_CHUNK_SIZE, remaining))
+                if not chunk:
+                    raise ConnectionError("Socket closed during file transfer")
+                f.write(chunk)
+                remaining -= len(chunk)
+        return dest_path, filesize
 
 
     def send_request(self, user_conn, user_data, message, username=None, user_id=None, user_type=None, message_type=None):

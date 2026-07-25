@@ -72,8 +72,12 @@ class UserHandler(Server_Functions):
         return True
         
                 
-    def verify_connection(self, user_conn, user_data): # Edit it 
+    def verify_connection(self, user_conn, user_data, session=None): # Edit it
         try:
+            # Bound blocking recv() calls so a slow/malicious client cannot stall
+            # the server forever (the single-threaded accept loop is vulnerable).
+            if user_conn.gettimeout() is None:
+                user_conn.settimeout(30)
 
             # Step 1: Receive the initial 3-byte user request
             first_request = user_conn.recv(3)
@@ -97,13 +101,27 @@ class UserHandler(Server_Functions):
             command, user_type_init_request, first_user_status = struct.unpack("BBB", first_request)
 
 
-            # Step 2: Retrieve the user ID
+            # Step 2: Retrieve the user ID (null-terminated, length-capped)
             user_id = b""
             while True:
                 byte = user_conn.recv(1)
+                if not byte:  # Socket closed by peer before null terminator
+                    self.Logger_server_UserHandler.LogsMessages(
+                        f"[!] Connection closed while reading User ID, from {user_data[0]}:{user_data[1]}",
+                        message_type="warning", verbose=self.verbose
+                    )
+                    self.disconnect_user(user_conn, user_data)
+                    return False
                 if byte == b'\x00':  # Null terminator
                     break
                 user_id += byte
+                if len(user_id) > 256:  # Reject unbounded/oversized IDs
+                    self.Logger_server_UserHandler.LogsMessages(
+                        f"[!] User ID exceeded 256 bytes, from {user_data[0]}:{user_data[1]}",
+                        message_type="warning", verbose=self.verbose
+                    )
+                    self.disconnect_user(user_conn, user_data)
+                    return False
             user_id = user_id.decode('utf-8')
     
             self.Logger_server_UserHandler.LogsMessages(
@@ -161,11 +179,13 @@ class UserHandler(Server_Functions):
 
 
             # Step 7: Confirm the user application
+            # Echo back the *application* code the client requested (not the
+            # user-type byte); the client validates that this matches its request.
             app_confirmation = struct.pack(
                 "BBB",
                 self.find_key_by_value(self.user_status_code, "accepted"),
                 self.find_key_by_value(self.user_status_code, "server"),
-                _user_type_application
+                user_applications
             )
             if not self.send_request(user_conn, user_data, app_confirmation):
                 self.disconnect_user(user_conn, user_data)
@@ -205,12 +225,17 @@ class UserHandler(Server_Functions):
                     f"\n    - User Port: {user_data[1]}",
                     message_type="warning", verbose=self.verbose
                 )
-                
+                # Reject the duplicate connection instead of silently accepting it.
+                self.disconnect_user(user_conn, user_data)
+                return False
+
             else:
-                self.order += 1
+                with self._conn_lock:
+                    self.order += 1
+                    order = self.order
                 self.ConnClientInfo = {
                     # User Information
-                    "User No.": self.order,
+                    "User No.": order,
                     "User Status": self.user_status_code[user_type_init_request], # e.g., "authorized access", "unauthorized access", "blocked User"
                     "User ID": user_id,
                     "Username": "user",
@@ -226,9 +251,19 @@ class UserHandler(Server_Functions):
                     # Connection and Network Status
                     "Connection Status": self.user_status_code[0x0D],             # Values from user_status_code connection statuses (e.g., "Connection established")
                 }
-                self.ConnClient.append(self.ConnClientInfo)
+                with self._conn_lock:
+                    self.ConnClient.append(self.ConnClientInfo)
                 self.Logger_server_UserHandler.LogsMessages(self.ConnClientInfo, message_type="info", verbose=self.verbose)
-    
+
+            # Expose the negotiated session details to the caller (thread-safe:
+            # the caller passes its own dict) so it can drive the file transfer.
+            if session is not None:
+                session["user_id"] = user_id
+                session["command"] = command
+                session["user_type"] = user_type_init_request
+                session["app_code"] = user_applications
+                session["application"] = self.user_status_code[user_applications]
+
             return True
     
         except Exception as e:

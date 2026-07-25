@@ -1,4 +1,5 @@
 import socket
+import threading
 
 
 
@@ -14,6 +15,9 @@ class Server:
         self.ServerSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
         self.order = 0
+        # Guards shared connection state (self.order / self.ConnClient) when the
+        # dashboard handles clients concurrently in threads.
+        self._conn_lock = threading.Lock()
         self.ConnAdmin = []
         self.ConnClient = []
         self.ConnFile = []
